@@ -1,0 +1,64 @@
+name: Weekly pulse
+
+on:
+  # Wed 15:00 UTC — after EIA WPSR (10:30 ET). Buffer gives EIA time to publish.
+  schedule:
+    - cron: "0 15 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ullage-pulse
+  cancel-in-progress: false
+
+jobs:
+  pulse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Refresh EIA prints in data.js
+        env:
+          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
+        run: node scripts/update-eia.mjs
+
+      - name: Open PR if data.js changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- data.js; then
+            echo "No changes to data.js — EIA prints already current."
+            exit 0
+          fi
+          date_iso=$(date -u +%Y-%m-%d)
+          branch="pulse/${date_iso}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add data.js
+          git commit -m "Weekly pulse — WE ${date_iso}"
+          git push -u origin "$branch"
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "Weekly pulse — WE ${date_iso}" \
+            --body "$(cat <<'EOF'
+          ## Weekly pulse
+
+          EIA WPSR + SPR refreshed by CI. Two lines move: SPR (`hero[1]`) and US commercial crude (`tiles[0]`). The `today` stamp and the `sources[]` EIA row also refresh.
+
+          Verify prints against https://www.eia.gov/petroleum/weekly/ then merge to publish.
+
+          - Series: `WCSSTUS1` (SPR) and `WCESTUS1` (US commercial excl. SPR), EIA v2 API
+          - IEA / OPEC / Vortexa untouched — weekly discipline, no invented world total
+          - Composite recomputes from `components[]` on render — nothing to hard-code here
+          EOF
+          )"
