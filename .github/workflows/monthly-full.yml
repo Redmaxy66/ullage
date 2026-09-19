@@ -1,0 +1,73 @@
+name: Monthly full
+
+on:
+  # 13th 06:00 UTC — after IEA OMR (~12th) and OPEC MOMR, ahead of 20:00 SGT publish.
+  schedule:
+    - cron: "0 6 13 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ullage-monthly
+  cancel-in-progress: false
+
+jobs:
+  monthly:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Refresh EIA prints (tolerate outage — humans fill the rest)
+        env:
+          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
+        run: node scripts/update-eia.mjs || echo "EIA refresh skipped; monthly PR opened anyway."
+
+      - name: Open monthly PR skeleton
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          date_iso=$(date -u +%Y-%m-%d)
+          month=$(date -u +"%B %Y")
+          branch="monthly/${date_iso}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add data.js
+          git commit --allow-empty -m "Monthly full — ${date_iso}"
+          git push -u origin "$branch"
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "Monthly full — ${month}" \
+            --body "$(cat <<'EOF'
+          ## Monthly full
+
+          EIA prints refreshed by CI where possible. Complete the following from the fresh IEA OMR (~12th), OPEC MOMR, and Vortexa, then merge.
+
+          ### Data edits in `data.js`
+          - [ ] `hero[0]` — IEA observed: `sub`, `value`, `delta`, and rotate `spark[]` (drop index 0, push the new print)
+          - [ ] `tiles[1]` — OECD cover `value` and `sub` (OPEC MOMR)
+          - [ ] `tiles[2]` — Latest month draw `value` and `sub` (IEA OMR)
+          - [ ] `tiles[3]` — Floating crude `value` and `sub` (Vortexa / MacroMicro)
+          - [ ] `components[]` — rebuild all seven `score` values against the maps on the Method tab
+          - [ ] `meter.line` — one-line editorial call for the month
+          - [ ] `sources[]` — refresh IEA, OPEC, Vortexa `vintage` and `used`
+
+          ### Composite
+          Rendered composite is computed from `components[]`. No hard-coded number to edit.
+
+          ### Publish target
+          20:00 Asia/Singapore on the 13th (12:00 UTC).
+
+          ### Reference
+          Score maps live on the desk's Method tab. The ≥80 print rule is: observed ≤ 7.4B AND OECD cover ≤ 54 days AND SPR ≤ 250 mb AND diesel cracks still extreme.
+          EOF
+          )"
